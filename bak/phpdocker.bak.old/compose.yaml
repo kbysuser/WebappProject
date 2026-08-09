@@ -6,9 +6,6 @@ services:
       - "8080:80"
     volumes:
       - ./app:/var/www/html
-    environment:
-      APACHE_RUN_USER: www-data
-      APACHE_RUN_GROUP: www-data
   db:
     image: mysql:8.0        # debugroom/viewComments_v2.php がウィンドウ関数を使うため 8.0 系を指定
     container_name: survey_mysql

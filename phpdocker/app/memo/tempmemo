@@ -1,0 +1,426 @@
+# アンケートアプリ 移行対象ファイル依存関係解析レポート
+
+対象: `phpdb.zip`（PHP + MySQL構成のWebアプリ）
+目的: `/index.php` を起点に、アンケート機能（`/survey`）と集計・確認機能（`/debugroom`）が
+正常に動作するために本当に必要なファイルを、実際のコード上の参照関係から特定する。
+`/quiz` は対象外として除外する。
+
+---
+
+## 0. まず前提の訂正：起点は `index.html` ではなく `index.php`
+
+ご依頼文には「`/index.html` を起点として」とありますが、zip内に `index.html` は存在しません。
+実際の起点は **`/index.php`** です（拡張子以外は想定どおりの役割）。
+
+根拠として、`phpinfo.php` 内に以下のコメントアウトされた行が残っています。
+
+```php
+//  include("index.html")
+```
+
+これは「開発初期は `index.html` だったが、その後PHPで動的に処理する `index.php` に置き換えられた」
+名残とみられます。以降のトレースはすべて `index.php` を起点として行っています。
+
+---
+
+## 1. 依存関係の全体像（実トレース結果）
+
+```
+/index.php
+ ├─ /css/common.css                       (<link>で参照)
+ ├─ /parts/header.php                     (include)
+ ├─ /parts/nav.php                        (include・インラインJSも含む)
+ │    └─ nav.php内のリンク:
+ │         ├─ アンケート → /survey/index.php
+ │         ├─ デバッグ・集計 → /debugroom/index.php  (JSのprompt()で簡易パスワード確認後に遷移)
+ │         └─ 問題を解く → onclickでalert()のみ。hrefはコメントアウト済み ⇒ /quiz へは実質遷移不可
+ ├─ /img/computer_tokui_boy.png           (絶対パスで参照)
+ └─ /parts/footer.php                     (include)
+
+/survey/index.php
+ ├─ /css/common.css                       (@importで参照)
+ ├─ /parts/header.php, nav.php, footer.php
+ ├─ /img/computer_tokui_boy.png           (絶対パス /img/... )
+ └─ フォームPOST送信先 → ./submit.php (=/survey/submit.php)
+
+/survey/submit.php
+ ├─ require_once /AppUtil.php             (DB接続・PDO取得)
+ ├─ INSERT into answers テーブル（設問ごとにループでexecute）
+ └─ JS location.href で ./result.php (=/survey/result.php) へリダイレクト
+
+/survey/result.php
+ ├─ /survey/img/computer_tokui_boy.png    (相対パス img/... ※ここだけ survey/img 配下を参照)
+ └─ 送信完了画面の表示のみ（DBアクセスなし。実は書き込み処理はコメントアウト済み）
+
+/debugroom/index.php
+ ├─ /css/common.css, /parts/header.php, nav.php, footer.php
+ └─ scandir()で自ディレクトリ内のファイルを動的に列挙し、各ファイルへの<a>リンクを自動生成
+      ⇒ debugroom/ 配下にある「ファイル」は名前で判定されず全部リンク対象になる
+
+/debugroom/{aggregation, pivotAggregation, viewAnswers, viewComments, viewComments_v2}.php
+ ├─ /css/common.css, /parts/header.php, nav.php, footer.php
+ ├─ require_once /AppUtil.php
+ └─ answers テーブルへの SELECT 集計クエリを実行して表表示
+
+/debugroom/helloappend.php
+ ├─ require_once /AppUtil.php
+ └─ AppUtil::appendText() のテスト呼び出し（answersテーブルとは無関係。テキストログ出力のデバッグ用）
+
+/debugroom/helloquiz.php
+ └─ header/nav/footerを出すだけの中身が空のテストページ（quizという名前だが機能的な関連なし）
+```
+
+`AppUtil.php` は DB接続（`getPDO()`）と旧テキストログ機能（`appendText()`）を持つ共通クラスで、
+`survey/submit.php` と `debugroom/*.php` すべてから読み込まれる、**実質的なコアファイル**です。
+
+---
+
+## 2. ファイル分類（依存関係の根拠つき）
+
+| 分類 | パス | 必要な理由 / 根拠 |
+|---|---|---|
+| **必須** | `index.php` | 起点そのもの |
+| **必須** | `css/common.css` | `index.php`・`survey/index.php`・`debugroom/*.php` 全体で参照 |
+| **必須** | `img/computer_tokui_boy.png` | `index.php`・`survey/index.php` が絶対パス `/img/...` で参照 |
+| **必須** | `parts/header.php` | 全ページで include |
+| **必須** | `parts/nav.php` | 全ページで include。`/survey/index.php`・`/debugroom/index.php` への導線もここにある |
+| **必須** | `parts/footer.php` | 全ページで include |
+| **必須** | `AppUtil.php` | `survey/submit.php` と `debugroom/*.php` すべてがDB接続に使用 |
+| **必須** | `survey/index.php` | アンケート画面本体 |
+| **必須** | `survey/submit.php` | 回答をDBにINSERTする処理本体 |
+| **必須** | `survey/result.php` | `submit.php` からJSリダイレクトされる送信完了画面 |
+| **必須** | `survey/img/computer_tokui_boy.png` | `survey/result.php` が**相対パス** `img/...` で参照（`/img/`ではなくここを見る） |
+| **必須** | `debugroom/index.php` | 集計・確認機能の入口。かつ同ディレクトリ内ファイルへのリンクを動的生成する |
+| **必須** | `debugroom/aggregation.php` | 設問ごとの平均集計（`debugroom/index.php`のファイル一覧からリンクされる） |
+| **必須** | `debugroom/pivotAggregation.php` | 選択肢ごとの件数集計（同上） |
+| **必須** | `debugroom/viewAnswers.php` | 回答生データ一覧（同上） |
+| **必須** | `debugroom/viewComments.php` | コメント一覧（重複除去版） |
+| **条件付きで必要** | `debugroom/viewComments_v2.php` | `viewComments.php`とほぼ同機能（最新1件のみ抽出する改良版）。**MySQL 8.0以降のウィンドウ関数(`ROW_NUMBER() OVER`)が必須**。両方残すか、v2に一本化するかは要判断 |
+| **条件付きで必要** | `debugroom/helloappend.php` | 集計・閲覧機能自体には無関係（テキストログのデバッグ用テスト呼び出し）。ただし`debugroom/index.php`のファイル一覧に表示されるため、削除するならリンク切れを許容する前提が要る |
+| **必須（DB構築用）** | `sql_memo/setup.sql` | 新環境でDB・テーブルを作るのに必要 |
+| **条件付き（参考用）** | `sql_memo/sql_memo.sql` | `setup.sql`とほぼ同じCREATE TABLE＋参考SELECT文。実行時には不要だが資料として有用 |
+| **不要** | `debugroom/helloquiz.php` | 中身が空のテストページ。機能的な効果なし（「quiz」という名前だが`/quiz`とは無関係） |
+| **不要** | `answers/problem_.txt`（ルート直下） | 過去バージョンの`result.php`（書き込み処理が有効だった頃）が生成したログの残骸 |
+| **不要** | `debugroom/answers/problem_100.txt` | `helloappend.php`のテスト実行で生成されたログの残骸 |
+| **quiz専用のため除外** | `quiz/index.php` | `/quiz`本体。nav.phpのリンクはコメントアウト済みで到達不可 |
+| **quiz専用のため除外** | `quiz/index_.php` | `quiz/index.php`の旧版（バックアップ） |
+| **quiz専用のため除外** | `Question.php` | `quiz/index*.php`からのみinclude。DBアクセスなし |
+| **quiz専用のため除外** | `QuizManager.php` | 同上。セッションに直列化して保存するのみ |
+| **不要（到達不能な旧試作）** | `register.php`（ルート） | `index__.php`のフォームからのみ参照。現行`nav.php`からは到達不可 |
+| **不要（到達不能な旧試作）** | `result.php`（ルート） | `register.php`のリダイレクト先。同じく到達不可 |
+| **不要（到達不能な旧試作）** | `index__.php` | 二重送信防止トークンつきの旧フォーム。どこからもリンクされていない |
+| **不要（単独の試作）** | `hello.php` | 自己完結の実験用アンケートページ。他ファイルとの連携なし、DBも使わない |
+| **不要（単独の試作・リンク切れ）** | `helloLayout.php` | `survey/index.php`以前の試作版。フォーム送信先`./submit.php`はルート直下には存在しないため、単体では動作しない |
+| **不要・移行非推奨（要注意）** | `phpinfo.php` | `phpinfo()`をそのまま出力するデバッグファイル。**サーバ内部情報の漏えいリスクがあるため移行対象から外すことを強く推奨** |
+| **不要** | `memo.txt` | CTFdのDocker構築などローカル作業メモ。アプリ動作と無関係 |
+| **不要（ローカル開発用）** | `start.cmd` / `start_backup.cmd` / `start_port.cmd` | `php -S`でローカル起動するためのバッチファイル。移行先の実行環境次第では不要（参考用に残すかは任意） |
+| **用途不明** | なし | 全ファイルについてコード上から用途を特定できました（0件） |
+
+---
+
+## 3. 依存関係の追跡（カテゴリ別）
+
+- **HTML → CSS**: `index.php`／`debugroom/*.php`は`<link rel="stylesheet" href="/css/common.css">`、`survey/index.php`は`<style>@import url(/css/common.css);</style>`。いずれも絶対パスで`css/common.css`ただ1つを参照。
+- **HTML → JavaScript**: 外部`.js`ファイルは存在せず、すべて`<script>`タグ内にインライン記述（`parts/nav.php`のパスワード確認、`survey/index.php`のバリデーション、`survey/submit.php`・`register.php`のリダイレクトなど）。
+- **HTML → PHP**: `<?php include(...) ?>`で`parts/header.php`・`parts/nav.php`・`parts/footer.php`を各ページに埋め込み。フォームの`action`属性で`submit.php`等のPHPへPOST送信。
+- **JavaScript → PHP/API**: Ajax等のAPI呼び出しは一切なし。`location.href`によるページ遷移と、フォームの通常POST送信のみ。
+- **PHP → PHP**: `require_once $_SERVER['DOCUMENT_ROOT']."/AppUtil.php"`（`survey/submit.php`、`debugroom/*.php`、`quiz/*.php`）。`include($_SERVER['DOCUMENT_ROOT']."/parts/...")`は全ページ共通。
+- **PHP → SQL/MySQL**: 下記「6. DB調査結果」参照。PDO（プリペアドステートメント）経由。
+- **PHP → 外部ライブラリ**: なし。`composer.json`・`vendor/`は存在せず、Composer依存は一切ありません。
+- **PHP → 設定ファイル**: `.env`等の設定ファイルは存在せず、`AppUtil.php`内にDB接続情報が直書きされています。
+- **CSS → 画像・フォント**: `common.css`内に画像・フォントの参照はなし（`<img>`タグはHTML側で個別に指定）。
+- **JavaScript → 外部ライブラリ**: CDN読み込み等一切なし。
+- **Composerなどの依存関係**: なし（`composer.json`、`package.json`いずれも存在しません）。
+- **`.env`や設定ファイル**: なし。
+- **セッション・Cookie**: `survey/submit.php`・`survey/result.php`・`index__.php`・`quiz/index*.php`・ルート`result.php`で`session_start()`使用（`PHPSESSID`クッキー依存）。**注意**: `debugroom`への「パスワード確認」は`nav.php`内JSの`prompt()`によるクライアント側チェック（パスワード`"0000"`がソースに平文で埋め込み）のみで、サーバ側のセッション認証は一切行われていません。実質的なアクセス制御にはなっていない点は移行時に要検討です。
+- **アップロードファイル**: ユーザーによるファイルアップロード機能はありません。似た仕組みとして`AppUtil::appendText()`によるテキストログ書き出し機能がありますが、現在の本流（`submit.php`→DB）では呼び出されておらず、`debugroom/helloappend.php`のテスト呼び出しでのみ動作します。
+- **DBのテーブル・初期データ**: 次章参照。
+
+---
+
+## 4. `/quiz` の除外確認
+
+`parts/nav.php`を確認したところ、以下のコメントが残っています。
+
+```html
+<!-- ↓href="/quiz/index.php" だが、バグるので遷移しないようにした -->
+<li><a onclick="alert(`ごめんなさい😭未実装です`);">問題を解く</a></li>
+```
+
+実際のリンク先は`href`属性ではなく`alert()`のみで、**`index.php`起点では`/quiz`へ物理的に遷移する経路が存在しません**。
+
+`quiz/index.php`・`quiz/index_.php`・`Question.php`・`QuizManager.php`の中身も確認しましたが、
+
+- DBアクセスは一切なし（`AppUtil.php`は`include_once`されているものの、実際には未使用）
+- 質問データは`QuizManager.php`内にハードコードされ、`$_SESSION`にシリアライズ保存されるのみ
+- `survey`・`debugroom`側のファイルからこれらを参照する箇所はゼロ（共通で使っているのは`css/common.css`・`img/`・`parts/*`のみで、これらはいずれにせよ元々必須ファイル）
+
+以上より、**`/quiz`一式（`quiz/`ディレクトリ、`Question.php`、`QuizManager.php`）は移行対象から安全に除外できます**。
+
+---
+
+## 5. `/debugroom` の詳細
+
+### 集計・表示処理の内訳
+| ファイル | 内容 |
+|---|---|
+| `aggregation.php` | `questionId`ごとの回答値の平均（`AVG(CAST(answer AS DECIMAL))`） |
+| `pivotAggregation.php` | 選択肢（1〜5）ごとの件数＋平均＋合計件数のクロス集計 |
+| `viewAnswers.php` | `answers`テーブルの全件（`SELECT *`） |
+| `viewComments.php` | コメントの重複を除いた一覧（`SELECT DISTINCT comment`） |
+| `viewComments_v2.php` | コメントごとに最新の投稿1件のみ抽出（`ROW_NUMBER() OVER`使用、要MySQL8.0+） |
+
+- グラフ表示・CSV出力の機能は**存在しません**（すべてHTMLの`<table>`表示のみ）。
+- `debugroom`専用のPHP/JS/CSSファイルはこの5〜7本のみで、専用CSSファイルはなく共通の`css/common.css`を使い回しています。
+- アンケート側とのデータ共有は、共通の`answers`テーブルと共通クラス`AppUtil.php`を介して行われています。
+
+### データの流れ
+```
+[survey/index.php]
+   ユーザーが選択肢を選んでフォーム送信
+        ↓ POST
+[survey/submit.php]
+   AppUtil::getPDO() でDB接続
+   → 設問ごとに answers テーブルへ INSERT
+        ↓ JSでリダイレクト
+[survey/result.php]
+   送信完了画面を表示（DBアクセスなし）
+
+[debugroom/index.php]
+   自ディレクトリのファイル一覧をリンク表示
+        ↓ 各リンク
+[debugroom/aggregation.php 等]
+   AppUtil::getPDO() でDB接続
+   → answers テーブルを SELECT で集計・一覧表示
+```
+
+---
+
+## 6. DB調査結果
+
+- **DB名**: `crud_app`
+- **テーブル**: `answers`（1テーブルのみ）
+
+```sql
+CREATE TABLE `answers` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `username` text,
+  `questionId` text,
+  `answer` text,
+  `comment` text,
+  `createdAt` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  `updatedAt` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`)
+);
+```
+
+- **INSERT**: `survey/submit.php`（本流。設問数ぶんループしてバインド変数で複数回`execute()`）。`register.php`（旧版、1回のみ・到達不可）にも同等の文あり。
+- **SELECT**: `debugroom/`配下の5ファイルすべて（内容は上の表を参照）。
+- **UPDATE / DELETE**: ソースコード中に**存在しません**。`updatedAt`カラムに`ON UPDATE CURRENT_TIMESTAMP`が設定されていますが、実際にUPDATE文を発行している箇所はありません。
+- **JOIN**: なし（すべて単一テーブルへの集計・抽出クエリ）。
+- **初期データ**: なし。`CREATE TABLE`のみで、初期INSERTデータは含まれていません。
+- **DB接続設定**: `AppUtil.php`にハードコードされています（設定ファイル分離なし）。
+
+```php
+$host = 'localhost';
+$dbname = 'crud_app';
+$user = 'root';
+$password = 'password';
+```
+　→ **移行時は新環境のホスト名／ユーザー名／パスワードに書き換える必要があります。**
+
+- **文字コードの不一致（要確認）**: `setup.sql`ではDBを`utf8mb4`で作成していますが、`AppUtil.php`のPDO接続文字列は`charset=utf8`を指定しています。絵文字など4バイト文字を含むコメントが投稿された場合に文字化けや切り捨てが起きる可能性があるため、移行時に統一を検討することをおすすめします。
+
+### 移行時にMySQL側で準備するもの
+1. `sql_memo/setup.sql`を実行してDB（`crud_app`）とテーブル（`answers`）を作成
+2. 新環境用のDBユーザー・パスワードを発行し、`AppUtil.php`の接続情報を書き換え
+3. **MySQL 8.0以降**を用意（`debugroom/viewComments_v2.php`がウィンドウ関数`ROW_NUMBER() OVER`を使用するため）
+4. 文字コードは`utf8mb4`に統一するかどうかを判断（上記の不一致点）
+
+### 実行環境側の要件（PHP）
+- `AppUtil.php`・ルート`result.php`などで`mkdir(directory: ..., permissions: ..., recursive: ...)`のように**名前付き引数**を使用しているため、**PHP 8.0以降**が必要です。
+
+---
+
+## 7. 最終的な移行対象
+
+```text
+project/
+├── index.php                          ← 必須（起点。index.html ではなく index.php）
+├── AppUtil.php                        ← 必須（DB接続・共通処理）
+├── css/
+│   └── common.css                     ← 必須
+├── img/
+│   └── computer_tokui_boy.png         ← 必須（絶対パス /img/... で参照）
+├── parts/
+│   ├── header.php                     ← 必須
+│   ├── nav.php                        ← 必須（要確認：debugroomのパスワードはクライアント側JSのみ）
+│   └── footer.php                     ← 必須
+├── survey/                            ← 必須
+│   ├── index.php                      ← 必須
+│   ├── submit.php                     ← 必須
+│   ├── result.php                     ← 必須
+│   └── img/
+│       └── computer_tokui_boy.png     ← 必須（相対パスで参照。/img/ とは別に必要）
+├── debugroom/                         ← 必須
+│   ├── index.php                      ← 必須
+│   ├── aggregation.php                ← 必須
+│   ├── pivotAggregation.php           ← 必須
+│   ├── viewAnswers.php                ← 必須
+│   ├── viewComments.php               ← 必須
+│   ├── viewComments_v2.php            ← 条件付き必須（要MySQL8.0+／v1と機能重複、要判断）
+│   └── helloappend.php                ← 条件付き（デバッグ用。無くても集計・閲覧は成立）
+├── sql/（旧 sql_memo/）
+│   ├── setup.sql                      ← 必須（新DB構築用。ソースではないが移行に必要）
+│   └── sql_memo.sql                   ← 任意（参考資料のみ、実行不要）
+│
+├── quiz/                              ← 不要（除外）
+├── Question.php                       ← 不要（quiz専用のため除外）
+├── QuizManager.php                    ← 不要（quiz専用のため除外）
+├── register.php                       ← 不要（到達不能な旧試作）
+├── result.php                         ← 不要（到達不能な旧試作。ルート直下）
+├── index__.php                        ← 不要（到達不能な旧試作）
+├── hello.php                          ← 不要（単独の試作）
+├── helloLayout.php                    ← 不要（単独の試作・リンク切れ）
+├── phpinfo.php                        ← 不要・移行非推奨（情報漏えいリスク）
+├── debugroom/helloquiz.php            ← 不要（空のテストページ）
+├── answers/                           ← 不要（過去ログの残骸）
+├── debugroom/answers/                 ← 不要（過去ログの残骸）
+├── memo.txt                           ← 不要（ローカル作業メモ）
+└── start.cmd / start_backup.cmd / start_port.cmd  ← 不要（ローカル起動用バッチ、任意で参考保持）
+```
+
+---
+
+## まとめ：移行時に特に確認していただきたい点
+
+1. **`survey/img/`と`img/`は両方必要**です（`survey/result.php`だけ相対パス参照のため、`/survey`配下だけコピーしても`index.php`・`survey/index.php`側の画像が404になります）。
+2. **`AppUtil.php`のDB接続情報は新環境用に書き換え必須**（ホスト名・ユーザー・パスワード）。
+3. **`debugroom/viewComments_v2.php`はMySQL 8.0以降が必要**（ウィンドウ関数使用）。移行先MySQLのバージョンを確認してください。
+4. **PHP 8.0以降が必要**（`mkdir()`の名前付き引数を使用）。
+5. **`phpinfo.php`は移行しないことを推奨**します（サーバ情報の漏えいリスク）。
+6. `debugroom`への遷移制御はクライアント側JSの平文パスワードのみで、サーバ側の認証は行われていません。移行を機にアクセス制御方式を見直すかどうかはご判断ください。
+7. `viewComments.php`と`viewComments_v2.php`は機能がほぼ重複しています。両方残すか一本化するか、移行前に決めておくと構成がすっきりします。
+
+---
+
+## 8. データベース設計案（正規化・ヘッダー＋明細方式）
+
+### 現行スキーマの問題点
+
+現行の`answers`テーブルは、`survey/submit.php`が設問数（18問）ぶんループしてINSERTする作りのため、
+
+- **1回の送信で18行**でき、そのうち`username`と`comment`が**18回重複**して入る
+- 「1回の送信」をまとめて取り出すキーが`username`頼み（デフォルト値は`REMOTE_ADDR`か`"てすと君!"`）で、同名の人がいると回答が混ざる
+- `answer`が`TEXT`型のため、集計のたびに`CAST(answer AS DECIMAL)`が必要
+
+という弱点があります。ワイドテーブル（1回答者＝1行、q1〜q18が列）にすると`GROUP BY questionId`の集計クエリが根本から書き直しになるため不向きです。**「送信ヘッダー」と「設問ごとの回答明細」に分ける正規化EAV**を推奨します。
+
+### 推奨スキーマ
+
+```sql
+-- DB名: crud_app という仮名から意味のある名前へ変更を推奨
+CREATE DATABASE survey_app DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+USE survey_app;
+
+-- 1送信 = 1行（ヘッダー。ユーザー名・自由記述コメントはここに1回だけ持つ）
+CREATE TABLE survey_responses (
+  id INT NOT NULL AUTO_INCREMENT,
+  username VARCHAR(255),
+  comment TEXT,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id)
+);
+
+-- 1設問への回答 = 1行（明細）
+CREATE TABLE survey_answers (
+  id INT NOT NULL AUTO_INCREMENT,
+  response_id INT NOT NULL,
+  question_id TINYINT NOT NULL,     -- 1〜18
+  answer_value TINYINT NOT NULL,    -- 選択肢の値。現行アンケートは最大4（2〜4段階が混在）
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_response_question (response_id, question_id),
+  FOREIGN KEY (response_id) REFERENCES survey_responses(id) ON DELETE CASCADE
+);
+```
+
+- `comment`（感想の自由記述）は送信全体で1つなので`survey_responses`側に1回だけ持たせます（現行は18回重複）。
+- `question_id`・`answer_value`は選択式の数値のみなので`INT`より小さい`TINYINT`で十分です。
+- Q1〜18は「2〜4段階」の選択式で、自由記述の設問は存在しないため、`survey_answers`は**Q1〜18すべてで共通の1テーブル**にできます（テキスト回答用の別テーブルは不要）。
+
+### `survey/submit.php`の更新イメージ
+
+```php
+$pdo->beginTransaction();
+$stmt1 = $pdo->prepare("INSERT INTO survey_responses(username, comment) VALUES (:username, :comment)");
+$stmt1->execute([':username' => $username, ':comment' => $comment]);
+$responseId = $pdo->lastInsertId();
+
+$stmt2 = $pdo->prepare(
+    "INSERT INTO survey_answers(response_id, question_id, answer_value) VALUES (:rid, :qid, :val)"
+);
+foreach ($answers as $questionId => $value) {
+    $stmt2->execute([':rid' => $responseId, ':qid' => $questionId, ':val' => $value]);
+}
+$pdo->commit();
+```
+
+---
+
+## 9. デバッグルーム集計処理の更新案（新スキーマ対応）
+
+### 設問ごとの選択肢件数・投票数・平均（Q1〜18共通、1クエリ）
+
+新スキーマではQ1〜18すべてで最大値が4（4段階／3段階／2段階が混在するが、いずれも1〜4の範囲に収まる）なので、`count_1`〜`count_4`の固定列で全設問をカバーできます。旧`pivotAggregation.php`は`count_1`〜`count_5`まで用意していましたが、実際の選択肢は最大4までしかないため`count_5`は常に0になる無駄な列でした。
+
+```sql
+SELECT
+    question_id,
+    SUM(CASE WHEN answer_value = 1 THEN 1 ELSE 0 END) AS count_1,
+    SUM(CASE WHEN answer_value = 2 THEN 1 ELSE 0 END) AS count_2,
+    SUM(CASE WHEN answer_value = 3 THEN 1 ELSE 0 END) AS count_3,
+    SUM(CASE WHEN answer_value = 4 THEN 1 ELSE 0 END) AS count_4,
+    COUNT(*) AS total_votes,
+    ROUND(AVG(answer_value), 2) AS avg_answer
+FROM survey_answers
+GROUP BY question_id
+ORDER BY question_id;
+```
+
+これ1本で、現行の`aggregation.php`（平均のみ）と`pivotAggregation.php`（件数のみ）を統合できます。
+
+**注意**: Q11・Q15（3段階：短い／丁度よい／長い）とQ17（2段階：知らなかった／知っていた）は、`count_4`（Q11・Q15・Q17は`count_3`も）が常に0になります。これは異常値ではなく、その設問にその選択肢自体が存在しないためです。画面表示時は、`count_1`〜`count_4`という数値ラベルのままだと設問によって意味が変わってしまう（例：Q1〜10は「1=そう思わない」だがQ17は「1=知らなかった」）ので、PHP側で`survey/index.php`にある`$survey`配列の選択肢ラベルと突き合わせて、列見出しを動的に差し替えて表示することを推奨します。
+
+### 自由記述「感想」の扱い（Q1〜18とは別枠）
+
+自由記述はそもそも数値集計になじまないため、**現行の`viewComments.php`／`viewComments_v2.php`のまま一覧表示**が適切です。新スキーマでは`comment`が`survey_responses`側に1回だけ入るので、クエリはむしろシンプルになります。
+
+```sql
+-- コメント一覧（重複除去なし・投稿日時つき）
+SELECT username, comment, created_at
+FROM survey_responses
+WHERE comment IS NOT NULL AND comment <> ''
+ORDER BY created_at DESC;
+```
+
+現行`viewComments_v2.php`が行っている「同一コメントは最新1件のみ」抽出をしたい場合は、以下のように書き換えます（ウィンドウ関数を使うため引き続きMySQL 8.0以降が必要です）。
+
+```sql
+SELECT username, comment, created_at
+FROM (
+    SELECT
+        username, comment, created_at,
+        ROW_NUMBER() OVER (PARTITION BY comment ORDER BY created_at DESC) AS rn
+    FROM survey_responses
+    WHERE comment IS NOT NULL AND comment <> ''
+) t
+WHERE rn = 1;
+```
+
+### 新スキーマでの`debugroom`ファイル構成（更新後の対応表）
+
+| 現行ファイル | 新スキーマでの扱い |
+|---|---|
+| `aggregation.php` + `pivotAggregation.php` | 上記「設問ごとの選択肢件数・投票数・平均」クエリに統合し、1ファイルに集約可能 |
+| `viewAnswers.php` | `SELECT * FROM survey_answers`（または`survey_responses`と`JOIN`して1送信単位で見せる）に変更 |
+| `viewComments.php` / `viewComments_v2.php` | 上記コメント一覧クエリに置き換え。テーブルが`answers`→`survey_responses`に変わる点のみ修正 |

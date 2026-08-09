@@ -1,0 +1,26 @@
+### 推奨スキーマ
+
+```sql
+-- DB名: crud_app という仮名から意味のある名前へ変更を推奨
+CREATE DATABASE survey_app DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+USE survey_app;
+
+-- 1送信 = 1行（ヘッダー。ユーザー名・自由記述コメントはここに1回だけ持つ）
+CREATE TABLE survey_responses (
+  id INT NOT NULL AUTO_INCREMENT,
+  username VARCHAR(255),
+  comment TEXT,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id)
+);
+
+-- 1設問への回答 = 1行（明細）
+CREATE TABLE survey_answers (
+  id INT NOT NULL AUTO_INCREMENT,
+  response_id INT NOT NULL,
+  question_id TINYINT NOT NULL,     -- 1〜18
+  answer_value TINYINT NOT NULL,    -- 選択肢の値。現行アンケートは最大4（2〜4段階が混在）
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_response_question (response_id, question_id),
+  FOREIGN KEY (response_id) REFERENCES survey_responses(id) ON DELETE CASCADE
+);
