@@ -1,0 +1,23 @@
+
+
+
+git clone https://github.com/kbysuser/WebappProject.git
+cd /WebappProject/phpdocker
+docker compose up -d 
+docker compose ps
+docker compose logs -f
+docker compose exec -it web bash
+docker compose exec -it db bash
+mysql -u survey_user -p
+#survey_pass
+show databases;
+use survey_app;
+show tables;
+describe survey_responses;
+describe survey_answers;
+
+docker compose exec db mysqldump -u root -p survey_app survey_responses survey_answers > survey_tables.sql;
+#rootpass
+cd /home/user/projects/WebappProject/phpdocker;
+ls -l survey_tables.sql;
+head -n 20 survey_tables.sql;
