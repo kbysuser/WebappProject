@@ -1,1 +1,6 @@
-./bak/
+bak/
+bak/phpdocker_fixed.zip
+*.bak
+**.bak
+*.old
+**.old
